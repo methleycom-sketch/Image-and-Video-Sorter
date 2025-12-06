@@ -69,6 +69,8 @@ class ImageSorterApp:
 
         # folder counts background job
         self.folder_count_thread = None
+        self.folder_count_refresh_pending = False
+        self.folder_count_lock = threading.Lock()
 
         root.title("Image and Video Sorter")
         root.bind("<Key>", self.on_keypress)
@@ -281,21 +283,35 @@ class ImageSorterApp:
         return "\n".join(f"{name}: {count}" for name, count in counts)
 
     def update_folder_counts(self):
-        if self.folder_count_thread and self.folder_count_thread.is_alive():
-            return
+        with self.folder_count_lock:
+            if self.folder_count_thread and self.folder_count_thread.is_alive():
+                self.folder_count_refresh_pending = True
+                return
 
-        start_time = perf_counter()
-        self.log_event("Refreshing folder counts...")
+            self.folder_count_refresh_pending = False
+            start_time = perf_counter()
+            self.log_event("Refreshing folder counts...")
 
-        def worker():
-            text = self._collect_folder_counts()
-            duration = perf_counter() - start_time
-            self.root.after(0, lambda: self.counts_label.config(text=text))
-            self.log_event("Folder counts updated", duration)
+            def worker():
+                try:
+                    text = self._collect_folder_counts()
+                    duration = perf_counter() - start_time
+                    self.root.after(0, lambda: self.counts_label.config(text=text))
+                    self.log_event("Folder counts updated", duration)
+                except Exception as exc:
+                    self.log_event(f"Folder counts refresh failed: {exc}")
+                finally:
+                    with self.folder_count_lock:
+                        self.folder_count_thread = None
+                        rerun = self.folder_count_refresh_pending
+                        self.folder_count_refresh_pending = False
 
-        thread = threading.Thread(target=worker, daemon=True)
-        self.folder_count_thread = thread
-        thread.start()
+                    if rerun:
+                        self.root.after(0, self.update_folder_counts)
+
+            thread = threading.Thread(target=worker, daemon=True)
+            self.folder_count_thread = thread
+            thread.start()
 
     # ---------------- SHUFFLE SORTED WINDOW ----------------
 
