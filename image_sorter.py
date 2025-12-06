@@ -58,6 +58,7 @@ class ImageSorterApp:
 
         root.title("Image and Video Sorter")
         root.bind("<Key>", self.on_keypress)
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.filename_label = tk.Label(root, text="", font=("Arial", 12))
         self.filename_label.pack(pady=5)
@@ -70,18 +71,12 @@ class ImageSorterApp:
         buttons = tk.Frame(main_frame)
         buttons.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
 
-        # right area: image + counts
+        # right area: image preview
         self.preview_frame = tk.Frame(main_frame)
         self.preview_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
         self.preview_label = tk.Label(self.preview_frame)
         self.preview_label.pack(side=tk.LEFT, padx=10, fill=tk.BOTH, expand=True)
-
-        self.counts_label = tk.Label(
-            self.preview_frame, text="", font=("Arial", 10),
-            justify=tk.LEFT, anchor="nw"
-        )
-        self.counts_label.pack(side=tk.LEFT, padx=10, anchor="n")
 
         # re render image on resize
         self.preview_frame.bind("<Configure>", self.on_preview_resize)
@@ -135,7 +130,6 @@ class ImageSorterApp:
             root.destroy()
             return
 
-        self.update_folder_counts()
         self.load_next_file()
 
     # ---------------- KEYBOARD SHORTCUTS ----------------
@@ -170,48 +164,18 @@ class ImageSorterApp:
     # Videos first, then images
 
     def _get_files(self):
-        images, videos = [], []
-        for p in SOURCE_DIR.iterdir():
-            if p.is_file() and p.name not in self.sorted_names:
-                ext = p.suffix.lower()
-                if ext in IMAGE_EXTS:
-                    images.append(p)
-                elif ext in VIDEO_EXTS:
-                    videos.append(p)
-        return sorted(videos) + sorted(images)
+        valid_files = (
+            p for p in SOURCE_DIR.iterdir()
+            if p.is_file() and p.name not in self.sorted_names
+            and p.suffix.lower() in VALID_EXTS
+        )
 
-    # ---------------- FOLDER COUNTS ----------------
+        def sort_key(path: Path):
+            ext = path.suffix.lower()
+            is_video = ext in VIDEO_EXTS
+            return (0 if is_video else 1, path.name.lower())
 
-    def update_folder_counts(self):
-        counts = []
-
-        if SOURCE_DIR.exists():
-            for entry in SOURCE_DIR.iterdir():
-                if not entry.is_dir():
-                    continue
-
-                if entry.name.startswith("."):
-                    continue
-
-                if entry.name == "Delete":
-                    continue
-
-                count = 0
-                try:
-                    for f in entry.iterdir():
-                        if f.is_file() and f.suffix.lower() in VALID_EXTS:
-                            count += 1
-                except Exception:
-                    pass
-
-                if count < 10:
-                    continue
-
-                counts.append((entry.name, count))
-
-        counts.sort(key=lambda x: (-x[1], x[0].lower()))
-        text = "\n".join(f"{name}: {count}" for name, count in counts)
-        self.counts_label.config(text=text)
+        return sorted(valid_files, key=sort_key)
 
     # ---------------- SHUFFLE SORTED WINDOW ----------------
 
@@ -297,8 +261,8 @@ class ImageSorterApp:
 
         try:
             if ext in IMAGE_EXTS:
-                img = Image.open(path)
-                self.shuffle_image_pil = img
+                with Image.open(path) as img:
+                    self.shuffle_image_pil = img.copy()
                 self.render_shuffle_image()
                 kind = "IMAGE"
             elif ext in VIDEO_EXTS:
@@ -492,7 +456,6 @@ class ImageSorterApp:
             self.preview_label.config(image="", text="")
             self.info_label.config(text="")
             self.status_label.config(text="Finished.")
-            self.update_folder_counts()
             return
 
         self.current_path = self.files[self.index]
@@ -504,8 +467,8 @@ class ImageSorterApp:
         self.open_video_button.pack_forget()
 
         if ext in IMAGE_EXTS:
-            img = Image.open(self.current_path)
-            self.current_image_pil = img
+            with Image.open(self.current_path) as img:
+                self.current_image_pil = img.copy()
             self.render_current_image()
             self.rotate_button.config(state=tk.NORMAL)
         else:
@@ -515,7 +478,6 @@ class ImageSorterApp:
             self.open_video_button.pack(fill=tk.X, pady=2)
 
         self.update_previous_button()
-        self.update_folder_counts()
         self.update_status()
 
     def update_previous_button(self):
@@ -599,6 +561,11 @@ class ImageSorterApp:
         self.status_label.config(
             text=f"File {self.index + 1} of {len(self.files)} | Remaining: {remaining}"
         )
+
+    def on_close(self):
+        self.stop_video_preview()
+        self.close_shuffle_window()
+        self.root.destroy()
 
 
 def main():
