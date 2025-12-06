@@ -41,6 +41,8 @@ class ImageSorterApp:
 
         self.actions = []
         self.last_folder_name = None
+        self.moving_file = False
+        self.control_widgets = []
 
         # shuffle window state
         self.shuffle_window = None
@@ -98,28 +100,42 @@ class ImageSorterApp:
         self.folder_entry = tk.Entry(entry_frame, width=18)
         self.folder_entry.pack(fill=tk.X, pady=2)
         self.folder_entry.bind("<Return>", self.move_current_file)
+        self.control_widgets.append(self.folder_entry)
 
         # main buttons in left column
-        tk.Button(buttons, text="Move file", command=self.move_current_file).pack(fill=tk.X, pady=2)
-        tk.Button(buttons, text="Skip", command=self.skip_file).pack(fill=tk.X, pady=2)
+        move_btn = tk.Button(buttons, text="Move file", command=self.move_current_file)
+        move_btn.pack(fill=tk.X, pady=2)
+        self.control_widgets.append(move_btn)
+
+        skip_btn = tk.Button(buttons, text="Skip", command=self.skip_file)
+        skip_btn.pack(fill=tk.X, pady=2)
+        self.control_widgets.append(skip_btn)
 
         self.rotate_button = tk.Button(buttons, text="Rotate image 90°",
                                        command=self.rotate_image)
         self.rotate_button.pack(fill=tk.X, pady=2)
+        self.control_widgets.append(self.rotate_button)
 
         self.add_prev_button = tk.Button(buttons, text="Add to (none)",
                                          state=tk.DISABLED,
                                          command=self.add_to_previous_folder)
         self.add_prev_button.pack(fill=tk.X, pady=2)
+        self.control_widgets.append(self.add_prev_button)
 
-        tk.Button(buttons, text="Send to Delete folder", fg="red",
-                  command=self.send_to_delete).pack(fill=tk.X, pady=2)
+        delete_btn = tk.Button(buttons, text="Send to Delete folder", fg="red",
+                               command=self.send_to_delete)
+        delete_btn.pack(fill=tk.X, pady=2)
+        self.control_widgets.append(delete_btn)
 
-        tk.Button(buttons, text="Undo last move",
-                  command=self.undo_last_action).pack(fill=tk.X, pady=2)
+        undo_btn = tk.Button(buttons, text="Undo last move",
+                             command=self.undo_last_action)
+        undo_btn.pack(fill=tk.X, pady=2)
+        self.control_widgets.append(undo_btn)
 
-        tk.Button(buttons, text="Shuffle Sorted",
-                  command=self.open_shuffle_sorted).pack(fill=tk.X, pady=2)
+        shuffle_btn = tk.Button(buttons, text="Shuffle Sorted",
+                                command=self.open_shuffle_sorted)
+        shuffle_btn.pack(fill=tk.X, pady=2)
+        self.control_widgets.append(shuffle_btn)
 
         tk.Button(buttons, text="Quit", command=root.destroy).pack(fill=tk.X, pady=2)
 
@@ -130,6 +146,7 @@ class ImageSorterApp:
 
         self.open_video_button = tk.Button(buttons, text="Open externally",
                                            command=self.open_video)
+        self.control_widgets.append(self.open_video_button)
 
         self.status_label = tk.Label(buttons, anchor="w", justify="left")
         self.status_label.pack(fill=tk.X, pady=(10, 0))
@@ -501,6 +518,9 @@ class ImageSorterApp:
         self.stop_video_preview()
         self.current_image_pil = None
 
+        if self.moving_file:
+            return
+
         if self.index >= len(self.files):
             self.current_path = None
             self.filename_label.config(text="All done")
@@ -542,6 +562,13 @@ class ImageSorterApp:
         else:
             self.add_prev_button.config(text="Add to (none)", state=tk.DISABLED)
 
+    def _set_controls_state(self, state):
+        for widget in self.control_widgets:
+            try:
+                widget.config(state=state)
+            except tk.TclError:
+                pass
+
     def open_video(self):
         if self.current_path:
             subprocess.Popen(["open", str(self.current_path)])
@@ -549,46 +576,79 @@ class ImageSorterApp:
     # ---------------- ACTIONS (MAIN WINDOW) ----------------
 
     def _move_to(self, folder):
-        dest_dir = SOURCE_DIR / folder
-        dest_dir.mkdir(exist_ok=True)
+        if not self.current_path or self.moving_file:
+            return
 
-        dest = dest_dir / self.current_path.name
-        shutil.move(self.current_path, dest)
+        self.moving_file = True
+        self._set_controls_state(tk.DISABLED)
+        self.status_label.config(text="Moving file...")
+        path = self.current_path
 
-        self.actions.append({"name": self.current_path.name, "dest": dest})
-        self._mark_sorted(self.current_path)
+        self.stop_video_preview()
 
-        self.index += 1
-        self.load_next_file()
+        def worker():
+            try:
+                dest_dir = SOURCE_DIR / folder
+                dest_dir.mkdir(exist_ok=True)
+                dest = dest_dir / path.name
+                shutil.move(path, dest)
+                return dest, None
+            except Exception as exc:
+                return None, exc
+
+        def on_complete(result):
+            dest, error = result
+            self.moving_file = False
+            self._set_controls_state(tk.NORMAL)
+
+            if error:
+                messagebox.showerror("Move error", f"Could not move file:\n{error}")
+                self.update_status()
+                return
+
+            self.actions.append({"name": path.name, "dest": dest})
+            self._mark_sorted(path)
+            self.index += 1
+            self.last_folder_name = folder
+            self.load_next_file()
+            self.update_previous_button()
+            self.update_status()
+
+        def runner():
+            result = worker()
+            self.root.after(0, lambda: on_complete(result))
+
+        threading.Thread(target=runner, daemon=True).start()
 
     def move_current_file(self, event=None):
-        if not self.current_path:
+        if not self.current_path or self.moving_file:
             return
         folder = self.folder_entry.get().strip()
         if not folder:
             messagebox.showwarning("Missing folder name", "Enter a folder name.")
             return
         self._move_to(folder)
-        self.last_folder_name = folder
 
     def add_to_previous_folder(self):
-        if self.current_path and self.last_folder_name:
+        if self.current_path and self.last_folder_name and not self.moving_file:
             self._move_to(self.last_folder_name)
 
     def send_to_delete(self):
-        if self.current_path:
+        if self.current_path and not self.moving_file:
             self._move_to("Delete")
 
     def send_to_misc(self):
-        if self.current_path:
+        if self.current_path and not self.moving_file:
             self._move_to("Misc")
 
     def skip_file(self):
-        if self.current_path:
+        if self.current_path and not self.moving_file:
             self.index += 1
             self.load_next_file()
 
     def undo_last_action(self):
+        if self.moving_file:
+            return
         if not self.actions:
             messagebox.showinfo("Undo", "Nothing to undo.")
             return
