@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
@@ -55,6 +56,9 @@ class ImageSorterApp:
         self.shuffle_video_cap = None
         self.shuffle_video_playing = False
         self.shuffle_video_frame_job = None
+
+        # folder counts background job
+        self.folder_count_thread = None
 
         root.title("Image and Video Sorter")
         root.bind("<Key>", self.on_keypress)
@@ -182,7 +186,7 @@ class ImageSorterApp:
 
     # ---------------- FOLDER COUNTS ----------------
 
-    def update_folder_counts(self):
+    def _collect_folder_counts(self):
         counts = []
 
         if SOURCE_DIR.exists():
@@ -210,8 +214,19 @@ class ImageSorterApp:
                 counts.append((entry.name, count))
 
         counts.sort(key=lambda x: (-x[1], x[0].lower()))
-        text = "\n".join(f"{name}: {count}" for name, count in counts)
-        self.counts_label.config(text=text)
+        return "\n".join(f"{name}: {count}" for name, count in counts)
+
+    def update_folder_counts(self):
+        if self.folder_count_thread and self.folder_count_thread.is_alive():
+            return
+
+        def worker():
+            text = self._collect_folder_counts()
+            self.root.after(0, lambda: self.counts_label.config(text=text))
+
+        thread = threading.Thread(target=worker, daemon=True)
+        self.folder_count_thread = thread
+        thread.start()
 
     # ---------------- SHUFFLE SORTED WINDOW ----------------
 
