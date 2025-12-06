@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
+
 import shutil
 import subprocess
-import threading
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 import random
-from datetime import datetime
-from time import perf_counter
 
 import cv2
 from PIL import Image, ImageTk  # pip install pillow opencv-python
@@ -27,11 +25,6 @@ class ImageSorterApp:
         self.root = root
         self.source_dir = Path(source_dir)
 
-        # logging state
-        self.log_history = []
-        self.max_log_entries = 500
-        self.auto_raise_log = tk.BooleanVar(value=False)
-
         self.sorted_names = self._load_sorted_history()
         self.files = self._get_files()
 
@@ -44,13 +37,9 @@ class ImageSorterApp:
         self.video_cap = None
         self.video_playing = False
         self.video_frame_job = None
-        self.load_generation = 0
-        self.loading_thread = None
 
         self.actions = []
         self.last_folder_name = None
-        self.moving_file = False
-        self.control_widgets = []
 
         # shuffle window state
         self.shuffle_window = None
@@ -67,11 +56,6 @@ class ImageSorterApp:
         self.shuffle_video_playing = False
         self.shuffle_video_frame_job = None
 
-        # folder counts background job
-        self.folder_count_thread = None
-        self.folder_count_refresh_pending = False
-        self.folder_count_lock = threading.Lock()
-
         root.title("Image and Video Sorter")
         root.bind("<Key>", self.on_keypress)
 
@@ -81,17 +65,13 @@ class ImageSorterApp:
         # MAIN AREA: buttons on the left, preview on the right
         main_frame = tk.Frame(root)
         main_frame.pack(padx=10, pady=10, expand=True, fill=tk.BOTH)
-        self.main_frame = main_frame
 
         # left column: controls
         buttons = tk.Frame(main_frame)
         buttons.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
 
         # right area: image + counts
-        preview_and_log = tk.Frame(main_frame)
-        preview_and_log.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-
-        self.preview_frame = tk.Frame(preview_and_log)
+        self.preview_frame = tk.Frame(main_frame)
         self.preview_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
         self.preview_label = tk.Label(self.preview_frame)
@@ -106,36 +86,6 @@ class ImageSorterApp:
         # re render image on resize
         self.preview_frame.bind("<Configure>", self.on_preview_resize)
 
-        # log pane
-        self.log_frame = tk.Frame(preview_and_log, width=260)
-        self.log_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 0))
-
-        log_header = tk.Frame(self.log_frame)
-        log_header.pack(fill=tk.X)
-        tk.Label(log_header, text="Log", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
-        tk.Checkbutton(
-            log_header,
-            text="Auto-raise",
-            variable=self.auto_raise_log,
-            command=self._raise_log_pane
-        ).pack(side=tk.RIGHT)
-        tk.Button(log_header, text="Clear", command=self.clear_log).pack(side=tk.RIGHT, padx=5)
-
-        log_text_frame = tk.Frame(self.log_frame)
-        log_text_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
-        scrollbar = tk.Scrollbar(log_text_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log_text = tk.Text(
-            log_text_frame,
-            height=10,
-            width=40,
-            wrap="word",
-            state=tk.DISABLED
-        )
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.log_text.configure(yscrollcommand=scrollbar.set)
-        scrollbar.configure(command=self.log_text.yview)
-
         # entry field in left column
         entry_frame = tk.Frame(buttons)
         entry_frame.pack(pady=5, fill=tk.X)
@@ -144,42 +94,28 @@ class ImageSorterApp:
         self.folder_entry = tk.Entry(entry_frame, width=18)
         self.folder_entry.pack(fill=tk.X, pady=2)
         self.folder_entry.bind("<Return>", self.move_current_file)
-        self.control_widgets.append(self.folder_entry)
 
         # main buttons in left column
-        move_btn = tk.Button(buttons, text="Move file", command=self.move_current_file)
-        move_btn.pack(fill=tk.X, pady=2)
-        self.control_widgets.append(move_btn)
-
-        skip_btn = tk.Button(buttons, text="Skip", command=self.skip_file)
-        skip_btn.pack(fill=tk.X, pady=2)
-        self.control_widgets.append(skip_btn)
+        tk.Button(buttons, text="Move file", command=self.move_current_file).pack(fill=tk.X, pady=2)
+        tk.Button(buttons, text="Skip", command=self.skip_file).pack(fill=tk.X, pady=2)
 
         self.rotate_button = tk.Button(buttons, text="Rotate image 90°",
                                        command=self.rotate_image)
         self.rotate_button.pack(fill=tk.X, pady=2)
-        self.control_widgets.append(self.rotate_button)
 
         self.add_prev_button = tk.Button(buttons, text="Add to (none)",
                                          state=tk.DISABLED,
                                          command=self.add_to_previous_folder)
         self.add_prev_button.pack(fill=tk.X, pady=2)
-        self.control_widgets.append(self.add_prev_button)
 
-        delete_btn = tk.Button(buttons, text="Send to Delete folder", fg="red",
-                               command=self.send_to_delete)
-        delete_btn.pack(fill=tk.X, pady=2)
-        self.control_widgets.append(delete_btn)
+        tk.Button(buttons, text="Send to Delete folder", fg="red",
+                  command=self.send_to_delete).pack(fill=tk.X, pady=2)
 
-        undo_btn = tk.Button(buttons, text="Undo last move",
-                             command=self.undo_last_action)
-        undo_btn.pack(fill=tk.X, pady=2)
-        self.control_widgets.append(undo_btn)
+        tk.Button(buttons, text="Undo last move",
+                  command=self.undo_last_action).pack(fill=tk.X, pady=2)
 
-        shuffle_btn = tk.Button(buttons, text="Shuffle Sorted",
-                                command=self.open_shuffle_sorted)
-        shuffle_btn.pack(fill=tk.X, pady=2)
-        self.control_widgets.append(shuffle_btn)
+        tk.Button(buttons, text="Shuffle Sorted",
+                  command=self.open_shuffle_sorted).pack(fill=tk.X, pady=2)
 
         tk.Button(buttons, text="Quit", command=root.destroy).pack(fill=tk.X, pady=2)
 
@@ -190,7 +126,6 @@ class ImageSorterApp:
 
         self.open_video_button = tk.Button(buttons, text="Open externally",
                                            command=self.open_video)
-        self.control_widgets.append(self.open_video_button)
 
         self.status_label = tk.Label(buttons, anchor="w", justify="left")
         self.status_label.pack(fill=tk.X, pady=(10, 0))
@@ -202,7 +137,6 @@ class ImageSorterApp:
 
         self.update_folder_counts()
         self.load_next_file()
-        self._refresh_log_widget()
 
     # ---------------- KEYBOARD SHORTCUTS ----------------
 
@@ -236,8 +170,6 @@ class ImageSorterApp:
     # Videos first, then images
 
     def _get_files(self):
-        start_time = perf_counter()
-        self.log_event("Scanning source folder for unsorted files...")
         images, videos = [], []
         for p in SOURCE_DIR.iterdir():
             if p.is_file() and p.name not in self.sorted_names:
@@ -246,13 +178,11 @@ class ImageSorterApp:
                     images.append(p)
                 elif ext in VIDEO_EXTS:
                     videos.append(p)
-        files = sorted(videos) + sorted(images)
-        self.log_event(f"Found {len(files)} unsorted files", perf_counter() - start_time)
-        return files
+        return sorted(videos) + sorted(images)
 
     # ---------------- FOLDER COUNTS ----------------
 
-    def _collect_folder_counts(self):
+    def update_folder_counts(self):
         counts = []
 
         if SOURCE_DIR.exists():
@@ -280,38 +210,8 @@ class ImageSorterApp:
                 counts.append((entry.name, count))
 
         counts.sort(key=lambda x: (-x[1], x[0].lower()))
-        return "\n".join(f"{name}: {count}" for name, count in counts)
-
-    def update_folder_counts(self):
-        with self.folder_count_lock:
-            if self.folder_count_thread and self.folder_count_thread.is_alive():
-                self.folder_count_refresh_pending = True
-                return
-
-            self.folder_count_refresh_pending = False
-            start_time = perf_counter()
-            self.log_event("Refreshing folder counts...")
-
-            def worker():
-                try:
-                    text = self._collect_folder_counts()
-                    duration = perf_counter() - start_time
-                    self.root.after(0, lambda: self.counts_label.config(text=text))
-                    self.log_event("Folder counts updated", duration)
-                except Exception as exc:
-                    self.log_event(f"Folder counts refresh failed: {exc}")
-                finally:
-                    with self.folder_count_lock:
-                        self.folder_count_thread = None
-                        rerun = self.folder_count_refresh_pending
-                        self.folder_count_refresh_pending = False
-
-                    if rerun:
-                        self.root.after(0, self.update_folder_counts)
-
-            thread = threading.Thread(target=worker, daemon=True)
-            self.folder_count_thread = thread
-            thread.start()
+        text = "\n".join(f"{name}: {count}" for name, count in counts)
+        self.counts_label.config(text=text)
 
     # ---------------- SHUFFLE SORTED WINDOW ----------------
 
@@ -320,8 +220,6 @@ class ImageSorterApp:
             self.shuffle_window.lift()
             return
 
-        start_time = perf_counter()
-        self.log_event("Opening Shuffle Sorted window...")
         candidates = []
         if SOURCE_DIR.exists():
             for folder in SOURCE_DIR.iterdir():
@@ -338,7 +236,6 @@ class ImageSorterApp:
 
         if not candidates:
             messagebox.showinfo("Shuffle Sorted", "No sorted images or videos found.")
-            self.log_event("Shuffle Sorted cancelled: no candidates found", perf_counter() - start_time)
             return
 
         self.shuffle_candidates = candidates
@@ -377,10 +274,6 @@ class ImageSorterApp:
 
         self.shuffle_current_image_tk = None
         self.shuffle_show_current()
-        self.log_event(
-            f"Shuffle Sorted ready with {len(self.shuffle_candidates)} candidates",
-            perf_counter() - start_time,
-        )
 
     def close_shuffle_window(self):
         self.shuffle_stop_video()
@@ -395,7 +288,6 @@ class ImageSorterApp:
     def shuffle_show_current(self):
         if not self.shuffle_candidates or self.shuffle_window is None:
             return
-        start_time = perf_counter()
         idx = self.shuffle_order[self.shuffle_index]
         path, folder = self.shuffle_candidates[idx]
         ext = path.suffix.lower()
@@ -430,23 +322,16 @@ class ImageSorterApp:
             self.shuffle_info_label.config(
                 text=f"Could not open file:\n{path}\n{e}"
             )
-        finally:
-            self.log_event(
-                f"Loaded shuffle item {self.shuffle_index + 1}/{len(self.shuffle_order)}: {path.name}",
-                perf_counter() - start_time,
-            )
 
     def shuffle_next_image(self, event=None):
         if not self.shuffle_candidates:
             return
-        self.log_event("Shuffle: next image")
         self.shuffle_index = (self.shuffle_index + 1) % len(self.shuffle_order)
         self.shuffle_show_current()
 
     def shuffle_prev_image(self, event=None):
         if not self.shuffle_candidates:
             return
-        self.log_event("Shuffle: previous image")
         self.shuffle_index = (self.shuffle_index - 1) % len(self.shuffle_order)
         self.shuffle_show_current()
 
@@ -486,20 +371,16 @@ class ImageSorterApp:
         if self.shuffle_video_cap:
             self.shuffle_video_cap.release()
             self.shuffle_video_cap = None
-        self.log_event("Stopped shuffle video preview")
 
     def shuffle_start_video(self, path):
-        start_time = perf_counter()
         self.shuffle_stop_video()
         cap = cv2.VideoCapture(str(path))
         if not cap.isOpened():
             self.shuffle_image_label.config(text="Could not open video")
-            self.log_event("Failed to start shuffle video preview")
             return
         self.shuffle_video_cap = cap
         self.shuffle_video_playing = True
         self.shuffle_show_video_frame()
-        self.log_event(f"Started shuffle video preview for {path.name}", perf_counter() - start_time)
 
     def shuffle_show_video_frame(self):
         if not self.shuffle_video_playing or self.shuffle_video_cap is None or self.shuffle_window is None:
@@ -552,20 +433,16 @@ class ImageSorterApp:
         if self.video_cap:
             self.video_cap.release()
             self.video_cap = None
-        self.log_event("Stopped main video preview")
 
-    def start_video_preview(self, path, preloaded_cap=None):
-        start_time = perf_counter()
+    def start_video_preview(self, path):
         self.stop_video_preview()
-        cap = preloaded_cap or cv2.VideoCapture(str(path))
+        cap = cv2.VideoCapture(str(path))
         if not cap.isOpened():
             self.preview_label.config(text="Could not open video")
-            self.log_event(f"Failed to start video preview for {path.name}")
             return
         self.video_cap = cap
         self.video_playing = True
         self.show_video_frame()
-        self.log_event(f"Started video preview for {path.name}", perf_counter() - start_time)
 
     def show_video_frame(self):
         if not self.video_playing or self.video_cap is None:
@@ -600,24 +477,14 @@ class ImageSorterApp:
 
     def rotate_image(self):
         if self.current_image_pil:
-            start_time = perf_counter()
             self.current_image_pil = self.current_image_pil.rotate(-90, expand=True)
             self.render_current_image()
-            self.log_event("Rotated image 90°", perf_counter() - start_time)
 
     # ---------------- UI (MAIN WINDOW) ----------------
 
     def load_next_file(self):
-        start_time = perf_counter()
-        self.log_event("Loading next file...")
         self.stop_video_preview()
         self.current_image_pil = None
-
-        if self.loading_thread and self.loading_thread.is_alive():
-            self.load_generation += 1
-
-        if self.moving_file:
-            return
 
         if self.index >= len(self.files):
             self.current_path = None
@@ -626,7 +493,6 @@ class ImageSorterApp:
             self.info_label.config(text="")
             self.status_label.config(text="Finished.")
             self.update_folder_counts()
-            self.log_event("All files processed", perf_counter() - start_time)
             return
 
         self.current_path = self.files[self.index]
@@ -634,68 +500,23 @@ class ImageSorterApp:
         self.folder_entry.delete(0, tk.END)
 
         ext = self.current_path.suffix.lower()
-        self.info_label.config(text="Loading...")
+        self.info_label.config(text="")
         self.open_video_button.pack_forget()
-        self.rotate_button.config(state=tk.DISABLED)
 
-        generation = self.load_generation + 1
-        self.load_generation = generation
+        if ext in IMAGE_EXTS:
+            img = Image.open(self.current_path)
+            self.current_image_pil = img
+            self.render_current_image()
+            self.rotate_button.config(state=tk.NORMAL)
+        else:
+            self.start_video_preview(self.current_path)
+            self.rotate_button.config(state=tk.DISABLED)
+            self.info_label.config(text="Video playing in preview")
+            self.open_video_button.pack(fill=tk.X, pady=2)
 
-        def worker():
-            try:
-                if ext in IMAGE_EXTS:
-                    img = Image.open(self.current_path)
-                    img.load()
-                    return generation, self.current_path, img, None, None
-                if ext in VIDEO_EXTS:
-                    cap = cv2.VideoCapture(str(self.current_path))
-                    if not cap.isOpened():
-                        return generation, self.current_path, None, None, "Could not open video"
-                    return generation, self.current_path, None, cap, None
-                return generation, self.current_path, None, None, "Unsupported file type"
-            except Exception as exc:
-                return generation, self.current_path, None, None, str(exc)
-
-        def on_complete(result):
-            gen, path, img, cap, error = result
-            if gen != self.load_generation:
-                if cap:
-                    cap.release()
-                return
-
-            self.loading_thread = None
-            self.current_path = path
-            self.info_label.config(text="")
-
-            if error:
-                self.preview_label.config(text=error, image="")
-                self.status_label.config(text="Error loading file")
-                self.update_status()
-                self.log_event(f"Failed to load {path.name}: {error}", perf_counter() - start_time)
-                return
-
-            if img:
-                self.current_image_pil = img
-                self.render_current_image()
-                self.rotate_button.config(state=tk.NORMAL)
-            elif cap:
-                self.start_video_preview(path, preloaded_cap=cap)
-                self.rotate_button.config(state=tk.DISABLED)
-                self.info_label.config(text="Video playing in preview")
-                self.open_video_button.pack(fill=tk.X, pady=2)
-
-            self.update_previous_button()
-            self.update_folder_counts()
-            self.update_status()
-            self.log_event(f"Loaded {path.name}", perf_counter() - start_time)
-
-        def runner():
-            result = worker()
-            self.root.after(0, lambda: on_complete(result))
-
-        thread = threading.Thread(target=runner, daemon=True)
-        self.loading_thread = thread
-        thread.start()
+        self.update_previous_button()
+        self.update_folder_counts()
+        self.update_status()
 
     def update_previous_button(self):
         if self.last_folder_name:
@@ -706,13 +527,6 @@ class ImageSorterApp:
         else:
             self.add_prev_button.config(text="Add to (none)", state=tk.DISABLED)
 
-    def _set_controls_state(self, state):
-        for widget in self.control_widgets:
-            try:
-                widget.config(state=state)
-            except tk.TclError:
-                pass
-
     def open_video(self):
         if self.current_path:
             subprocess.Popen(["open", str(self.current_path)])
@@ -720,85 +534,46 @@ class ImageSorterApp:
     # ---------------- ACTIONS (MAIN WINDOW) ----------------
 
     def _move_to(self, folder):
-        if not self.current_path or self.moving_file:
-            return
+        dest_dir = SOURCE_DIR / folder
+        dest_dir.mkdir(exist_ok=True)
 
-        start_time = perf_counter()
-        self.log_event(f"Moving file to {folder}...")
+        dest = dest_dir / self.current_path.name
+        shutil.move(self.current_path, dest)
 
-        self.moving_file = True
-        self._set_controls_state(tk.DISABLED)
-        self.status_label.config(text="Moving file...")
-        path = self.current_path
+        self.actions.append({"name": self.current_path.name, "dest": dest})
+        self._mark_sorted(self.current_path)
 
-        self.stop_video_preview()
-
-        def worker():
-            try:
-                dest_dir = SOURCE_DIR / folder
-                dest_dir.mkdir(exist_ok=True)
-                dest = dest_dir / path.name
-                shutil.move(path, dest)
-                return dest, None
-            except Exception as exc:
-                return None, exc
-
-        def on_complete(result):
-            dest, error = result
-            self.moving_file = False
-            self._set_controls_state(tk.NORMAL)
-
-            if error:
-                messagebox.showerror("Move error", f"Could not move file:\n{error}")
-                self.update_status()
-                self.log_event(f"Failed to move file: {error}", perf_counter() - start_time)
-                return
-
-            self.actions.append({"name": path.name, "dest": dest})
-            self._mark_sorted(path)
-            self.index += 1
-            self.last_folder_name = folder
-            self.load_next_file()
-            self.update_previous_button()
-            self.update_status()
-            self.log_event(f"Moved {path.name} to {folder}", perf_counter() - start_time)
-
-        def runner():
-            result = worker()
-            self.root.after(0, lambda: on_complete(result))
-
-        threading.Thread(target=runner, daemon=True).start()
+        self.index += 1
+        self.load_next_file()
 
     def move_current_file(self, event=None):
-        if not self.current_path or self.moving_file:
+        if not self.current_path:
             return
         folder = self.folder_entry.get().strip()
         if not folder:
             messagebox.showwarning("Missing folder name", "Enter a folder name.")
             return
         self._move_to(folder)
+        self.last_folder_name = folder
 
     def add_to_previous_folder(self):
-        if self.current_path and self.last_folder_name and not self.moving_file:
+        if self.current_path and self.last_folder_name:
             self._move_to(self.last_folder_name)
 
     def send_to_delete(self):
-        if self.current_path and not self.moving_file:
+        if self.current_path:
             self._move_to("Delete")
 
     def send_to_misc(self):
-        if self.current_path and not self.moving_file:
+        if self.current_path:
             self._move_to("Misc")
 
     def skip_file(self):
-        if self.current_path and not self.moving_file:
+        if self.current_path:
             self.index += 1
-            self.log_event("Skipped current file")
             self.load_next_file()
 
     def undo_last_action(self):
-        if self.moving_file:
-            return
         if not self.actions:
             messagebox.showinfo("Undo", "Nothing to undo.")
             return
@@ -818,68 +593,12 @@ class ImageSorterApp:
         if self.index > 0:
             self.index -= 1
         self.load_next_file()
-        self.log_event(f"Undid move for {name}")
 
     def update_status(self):
         remaining = len(self.files) - self.index
         self.status_label.config(
             text=f"File {self.index + 1} of {len(self.files)} | Remaining: {remaining}"
         )
-
-    # ---------------- LOGGING ----------------
-
-    def log_event(self, message, duration=None):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        suffix = f" ({duration:.3f}s)" if duration is not None else ""
-        entry = f"[{timestamp}] {message}{suffix}"
-
-        def append():
-            self.log_history.append(entry)
-            if len(self.log_history) > self.max_log_entries:
-                self.log_history = self.log_history[-self.max_log_entries:]
-            self._append_to_log_widget(entry, refresh=len(self.log_history) == self.max_log_entries)
-            if self.auto_raise_log.get():
-                self._raise_log_pane()
-
-        if threading.current_thread() is threading.main_thread():
-            append()
-        else:
-            self.root.after(0, append)
-
-    def _append_to_log_widget(self, entry, refresh=False):
-        if not hasattr(self, "log_text") or self.log_text is None:
-            return
-        if refresh:
-            self._refresh_log_widget()
-            return
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.insert(tk.END, entry + "\n")
-        self.log_text.configure(state=tk.DISABLED)
-        self.log_text.see(tk.END)
-
-    def _refresh_log_widget(self):
-        if not hasattr(self, "log_text") or self.log_text is None:
-            return
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.delete("1.0", tk.END)
-        for entry in self.log_history:
-            self.log_text.insert(tk.END, entry + "\n")
-        self.log_text.configure(state=tk.DISABLED)
-        self.log_text.see(tk.END)
-
-    def clear_log(self):
-        self.log_history.clear()
-        self._refresh_log_widget()
-
-    def _raise_log_pane(self):
-        if hasattr(self, "log_frame") and self.log_frame.winfo_exists():
-            self.log_frame.lift()
-        if hasattr(self, "log_text") and self.log_text.winfo_exists():
-            try:
-                self.log_text.see(tk.END)
-                self.log_text.focus_set()
-            except tk.TclError:
-                pass
 
 
 def main():
