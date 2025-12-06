@@ -38,6 +38,8 @@ class ImageSorterApp:
         self.video_cap = None
         self.video_playing = False
         self.video_frame_job = None
+        self.load_generation = 0
+        self.loading_thread = None
 
         self.actions = []
         self.last_folder_name = None
@@ -466,9 +468,9 @@ class ImageSorterApp:
             self.video_cap.release()
             self.video_cap = None
 
-    def start_video_preview(self, path):
+    def start_video_preview(self, path, preloaded_cap=None):
         self.stop_video_preview()
-        cap = cv2.VideoCapture(str(path))
+        cap = preloaded_cap or cv2.VideoCapture(str(path))
         if not cap.isOpened():
             self.preview_label.config(text="Could not open video")
             return
@@ -518,6 +520,9 @@ class ImageSorterApp:
         self.stop_video_preview()
         self.current_image_pil = None
 
+        if self.loading_thread and self.loading_thread.is_alive():
+            self.load_generation += 1
+
         if self.moving_file:
             return
 
@@ -535,23 +540,66 @@ class ImageSorterApp:
         self.folder_entry.delete(0, tk.END)
 
         ext = self.current_path.suffix.lower()
-        self.info_label.config(text="")
+        self.info_label.config(text="Loading...")
         self.open_video_button.pack_forget()
+        self.rotate_button.config(state=tk.DISABLED)
 
-        if ext in IMAGE_EXTS:
-            img = Image.open(self.current_path)
-            self.current_image_pil = img
-            self.render_current_image()
-            self.rotate_button.config(state=tk.NORMAL)
-        else:
-            self.start_video_preview(self.current_path)
-            self.rotate_button.config(state=tk.DISABLED)
-            self.info_label.config(text="Video playing in preview")
-            self.open_video_button.pack(fill=tk.X, pady=2)
+        generation = self.load_generation + 1
+        self.load_generation = generation
 
-        self.update_previous_button()
-        self.update_folder_counts()
-        self.update_status()
+        def worker():
+            try:
+                if ext in IMAGE_EXTS:
+                    img = Image.open(self.current_path)
+                    img.load()
+                    return generation, self.current_path, img, None, None
+                if ext in VIDEO_EXTS:
+                    cap = cv2.VideoCapture(str(self.current_path))
+                    if not cap.isOpened():
+                        return generation, self.current_path, None, None, "Could not open video"
+                    return generation, self.current_path, None, cap, None
+                return generation, self.current_path, None, None, "Unsupported file type"
+            except Exception as exc:
+                return generation, self.current_path, None, None, str(exc)
+
+        def on_complete(result):
+            gen, path, img, cap, error = result
+            if gen != self.load_generation:
+                if cap:
+                    cap.release()
+                return
+
+            self.loading_thread = None
+            self.current_path = path
+            self.info_label.config(text="")
+
+            if error:
+                self.preview_label.config(text=error, image="")
+                self.status_label.config(text="Error loading file")
+                self.update_status()
+                return
+
+            if img:
+                self.current_image_pil = img
+                self.render_current_image()
+                self.rotate_button.config(state=tk.NORMAL)
+            elif cap:
+                self.start_video_preview(path, preloaded_cap=cap)
+                self.rotate_button.config(state=tk.DISABLED)
+                self.info_label.config(text="Video playing in preview")
+                self.open_video_button.pack(fill=tk.X, pady=2)
+
+            self.update_previous_button()
+            self.update_folder_counts()
+            self.update_status()
+
+        def runner():
+            result = worker()
+            self.root.after(0, lambda: on_complete(result))
+
+        thread = threading.Thread(target=runner, daemon=True)
+        self.loading_thread = thread
+        thread.start()
 
     def update_previous_button(self):
         if self.last_folder_name:
