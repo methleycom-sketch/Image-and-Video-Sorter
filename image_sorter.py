@@ -16,6 +16,7 @@ SOURCE_DIR = Path("/Volumes/External 2TB drive/OBS/PhotoPrism/Photos").expanduse
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTS = {".mp4", ".mpeg4"}
 VALID_EXTS = IMAGE_EXTS | VIDEO_EXTS
+MAX_SIMILARITY_FILES = 500  # avoid expensive histogram pass on huge collections
 
 
 class ImageSorterApp:
@@ -166,9 +167,11 @@ class ImageSorterApp:
 
     def _compute_image_signature(self, path):
         try:
-            img = Image.open(path).convert("RGB")
-            img.thumbnail((64, 64))
-            hist = img.histogram()
+            # ensure file handle closes promptly to avoid leaks when many files
+            with Image.open(path) as img:
+                img = img.convert("RGB")
+                img.thumbnail((64, 64))
+                hist = img.histogram()
             total = sum(hist)
             if not total:
                 return None
@@ -182,6 +185,10 @@ class ImageSorterApp:
     def _order_images_by_similarity(self, image_paths):
         if not image_paths:
             return []
+
+        # Skip the expensive histogram comparison when too many images are present.
+        if len(image_paths) > MAX_SIMILARITY_FILES:
+            return sorted(image_paths, key=lambda p: p.name.lower())
 
         features = []
         fallbacks = []
