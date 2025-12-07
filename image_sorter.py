@@ -17,6 +17,11 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTS = {".mp4", ".mpeg4"}
 VALID_EXTS = IMAGE_EXTS | VIDEO_EXTS
 
+# Computing pairwise histogram similarity is O(n^2). Large folders were making startup
+# extremely slow and occasionally exhausting memory. Keep the similarity ordering fast
+# by switching to a simple alphabetical sort once the photo set exceeds this threshold.
+MAX_SIMILARITY_IMAGES = 250
+
 
 class ImageSorterApp:
     def __init__(self, root, source_dir):
@@ -154,12 +159,13 @@ class ImageSorterApp:
         images, videos = [], []
         if self.source_dir.exists():
             for p in self.source_dir.iterdir():
-                if p.is_file():
-                    ext = p.suffix.lower()
-                    if ext in IMAGE_EXTS:
-                        images.append(p)
-                    elif ext in VIDEO_EXTS:
-                        videos.append(p)
+                if not p.is_file():
+                    continue
+                ext = p.suffix.lower()
+                if ext in IMAGE_EXTS:
+                    images.append(p)
+                elif ext in VIDEO_EXTS:
+                    videos.append(p)
 
         ordered_images = self._order_images_by_similarity(images)
         return sorted(videos) + ordered_images
@@ -182,6 +188,11 @@ class ImageSorterApp:
     def _order_images_by_similarity(self, image_paths):
         if not image_paths:
             return []
+
+        # Avoid the O(n^2) similarity ordering for very large folders to keep startup fast
+        # and memory usage predictable.
+        if len(image_paths) > MAX_SIMILARITY_IMAGES:
+            return sorted(image_paths, key=lambda p: p.name.lower())
 
         features = []
         fallbacks = []
