@@ -156,7 +156,7 @@ class ImageSorterApp:
             root.destroy()
             return
 
-        self.refresh_folder_options(rescan=True)
+        self.refresh_folder_options()
 
         self.load_next_file()
 
@@ -693,9 +693,6 @@ class ImageSorterApp:
         dest_dir = self.source_dir / folder
         dest_dir.mkdir(exist_ok=True)
 
-        if folder not in self.folder_cache:
-            self.folder_cache.append(folder)
-            self.folder_cache.sort(key=str.lower)
         self.refresh_folder_options()
 
         dest = dest_dir / self.current_path.name
@@ -767,15 +764,13 @@ class ImageSorterApp:
         folders.sort(key=str.lower)
         return folders
 
-    def refresh_folder_options(self, rescan=False):
-        if rescan or not self.folder_cache:
-            self.folder_cache = self._list_available_folders()
-        self.folder_combobox["values"] = self.folder_cache
+    def refresh_folder_options(self):
+        self.folder_combobox["values"] = self._list_available_folders()
 
     def on_folder_typed(self, event=None):
         # simple autocomplete: update dropdown suggestions to matching entries
         text = self.folder_var.get().strip().lower()
-        all_folders = self.folder_cache
+        all_folders = self._list_available_folders()
         if not text:
             filtered = all_folders
         else:
