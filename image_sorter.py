@@ -39,6 +39,11 @@ class ImageSorterApp:
         self.actions = []
         self.last_folder_name = None
 
+        # destination folders for autocomplete
+        self.dest_folders = []
+        self.suggestion_listbox = None
+        self.suggestions_visible = False
+
         # shuffle window state (shared by Shuffle Sorted and Shuffle Selected)
         self.shuffle_window = None
         self.shuffle_candidates = []
@@ -91,6 +96,21 @@ class ImageSorterApp:
         self.folder_entry.pack(fill=tk.X, pady=2)
         self.folder_entry.bind("<Return>", self.move_current_file)
 
+        # autocomplete suggestion listbox (hidden by default)
+        self.suggestion_listbox = tk.Listbox(entry_frame, height=6)
+        self.suggestion_listbox.bind("<<ListboxSelect>>", self.on_suggestion_click)
+        self.suggestion_listbox.bind("<ButtonRelease-1>", self.on_suggestion_click)
+        self.suggestion_listbox.bind("<Return>", self.on_suggestion_enter)
+        self.suggestion_listbox.bind("<Escape>", lambda e: self.hide_suggestions())
+        self.suggestion_listbox.bind("<Up>", self.on_listbox_up)
+        self.suggestion_listbox.bind("<Down>", self.on_listbox_down)
+        # do not pack yet, will be packed when there are matches
+
+        # entry key bindings for autocomplete
+        self.folder_entry.bind("<KeyRelease>", self.on_folder_entry_change)
+        self.folder_entry.bind("<Down>", self.on_entry_down)
+        self.folder_entry.bind("<Escape>", lambda e: self.hide_suggestions())
+
         # main buttons in left column
         tk.Button(buttons, text="Move file", command=self.move_current_file).pack(fill=tk.X, pady=2)
         tk.Button(buttons, text="Skip", command=self.skip_file).pack(fill=tk.X, pady=2)
@@ -130,6 +150,9 @@ class ImageSorterApp:
         self.status_label = tk.Label(buttons, anchor="w", justify="left")
         self.status_label.pack(fill=tk.X, pady=(10, 0))
 
+        # initialise destination folder list for autocomplete
+        self._refresh_dest_folders()
+
         if not self.files:
             messagebox.showinfo("No files", "No files found in Photos.")
             root.destroy()
@@ -160,56 +183,101 @@ class ImageSorterApp:
                         images.append(p)
                     elif ext in VIDEO_EXTS:
                         videos.append(p)
+        return sorted(videos) + sorted(images)
 
-        ordered_images = self._order_images_by_similarity(images)
-        return sorted(videos) + ordered_images
+    # ---------------- DESTINATION FOLDERS FOR AUTOCOMPLETE ----------------
 
-    def _compute_image_signature(self, path):
-        try:
-            img = Image.open(path).convert("RGB")
-            img.thumbnail((64, 64))
-            hist = img.histogram()
-            total = sum(hist)
-            if not total:
-                return None
-            return [h / total for h in hist]
-        except Exception:
-            return None
+    def _refresh_dest_folders(self):
+        """One off or occasional rescan of subfolders."""
+        folders = []
+        if self.source_dir.exists():
+            for entry in self.source_dir.iterdir():
+                if entry.is_dir() and not entry.name.startswith("."):
+                    folders.append(entry.name)
+        self.dest_folders = sorted(folders, key=str.lower)
 
-    def _hist_distance(self, hist_a, hist_b):
-        return sum((a - b) ** 2 for a, b in zip(hist_a, hist_b))
+    def _add_folder_to_autocomplete(self, folder_name):
+        """Update dest_folders incrementally instead of rescanning on every move."""
+        if folder_name not in self.dest_folders:
+            self.dest_folders.append(folder_name)
+            self.dest_folders.sort(key=str.lower)
 
-    def _order_images_by_similarity(self, image_paths):
-        if not image_paths:
-            return []
+    def show_suggestions(self, matches):
+        self.suggestion_listbox.delete(0, tk.END)
+        for m in matches:
+            self.suggestion_listbox.insert(tk.END, m)
+        if not self.suggestions_visible:
+            self.suggestion_listbox.pack(fill=tk.X, pady=(0, 2))
+            self.suggestions_visible = True
+        if matches:
+            self.suggestion_listbox.selection_clear(0, tk.END)
+            self.suggestion_listbox.selection_set(0)
+            self.suggestion_listbox.activate(0)
 
-        features = []
-        fallbacks = []
+    def hide_suggestions(self):
+        if self.suggestions_visible:
+            self.suggestion_listbox.pack_forget()
+            self.suggestions_visible = False
 
-        for path in image_paths:
-            signature = self._compute_image_signature(path)
-            if signature is None:
-                fallbacks.append(path)
-            else:
-                features.append((path, signature))
+    def on_folder_entry_change(self, event):
+        # ignore navigation keys
+        if event.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
+            return
+        text = self.folder_entry.get().strip()
+        if not text:
+            self.hide_suggestions()
+            return
+        # case insensitive prefix match
+        matches = [f for f in self.dest_folders if f.lower().startswith(text.lower())]
+        if matches:
+            self.show_suggestions(matches)
+        else:
+            self.hide_suggestions()
 
-        ordered = []
-        if features:
-            features.sort(key=lambda item: item[0].name.lower())
-            current_path, current_sig = features.pop(0)
-            ordered.append(current_path)
+    def on_suggestion_click(self, event):
+        if not self.suggestions_visible:
+            return
+        selection = self.suggestion_listbox.curselection()
+        if not selection:
+            return
+        value = self.suggestion_listbox.get(selection[0])
+        self.folder_entry.delete(0, tk.END)
+        self.folder_entry.insert(0, value)
+        self.hide_suggestions()
+        self.folder_entry.focus_set()
 
-            while features:
-                next_idx, (next_path, next_sig) = min(
-                    enumerate(features),
-                    key=lambda item: self._hist_distance(current_sig, item[1][1]),
-                )
-                features.pop(next_idx)
-                ordered.append(next_path)
-                current_sig = next_sig
+    def on_suggestion_enter(self, event):
+        # accept selected suggestion with Enter from listbox
+        self.on_suggestion_click(event)
+        return "break"
 
-        ordered.extend(sorted(fallbacks, key=lambda p: p.name.lower()))
-        return ordered
+    def on_entry_down(self, event):
+        # move focus from entry to listbox when suggestions are visible
+        if self.suggestions_visible and self.suggestion_listbox.size() > 0:
+            self.suggestion_listbox.focus_set()
+            # keep current selection or set first
+            if not self.suggestion_listbox.curselection():
+                self.suggestion_listbox.selection_set(0)
+                self.suggestion_listbox.activate(0)
+            return "break"
+
+    def on_listbox_up(self, event):
+        # if at top and press Up, go back to entry
+        cur = self.suggestion_listbox.curselection()
+        if cur and cur[0] == 0:
+            self.folder_entry.focus_set()
+            return "break"
+
+    def on_listbox_down(self, event):
+        # standard behaviour, but stop at end
+        cur = self.suggestion_listbox.curselection()
+        if cur:
+            idx = cur[0]
+            if idx < self.suggestion_listbox.size() - 1:
+                self.suggestion_listbox.selection_clear(0, tk.END)
+                self.suggestion_listbox.selection_set(idx + 1)
+                self.suggestion_listbox.activate(idx + 1)
+        return "break"
 
     # ---------------- SHUFFLE SORTED ----------------
 
@@ -274,7 +342,7 @@ class ImageSorterApp:
         btn_frame = tk.Frame(win)
         btn_frame.pack(pady=(0, 10))
 
-        # new: select / deselect all
+        # select / deselect all
         def select_all():
             for v in self.shuffle_sel_vars.values():
                 v.set(True)
@@ -390,8 +458,9 @@ class ImageSorterApp:
 
         try:
             if ext in IMAGE_EXTS:
-                img = Image.open(path)
-                self.shuffle_image_pil = img
+                # open image without keeping file handle open
+                with Image.open(path) as img:
+                    self.shuffle_image_pil = img.copy()
                 self.render_shuffle_image()
                 kind = "IMAGE"
             elif ext in VIDEO_EXTS:
@@ -570,11 +639,56 @@ class ImageSorterApp:
             self.current_image_pil = self.current_image_pil.rotate(-90, expand=True)
             self.render_current_image()
 
+    # ---------------- CONFIRM NEW FOLDER ----------------
+
+    def confirm_create_folder(self, folder_name):
+        """Ask the user if they want to create a new folder that does not exist."""
+        win = tk.Toplevel(self.root)
+        win.title("Create new folder")
+        win.transient(self.root)
+        win.grab_set()
+
+        msg = f'The folder {folder_name} does not exist, Would you like to create a new folder named {folder_name}'
+        tk.Label(win, text=msg, wraplength=300, justify="left").pack(padx=15, pady=(15, 10))
+
+        result = {"value": False}
+
+        def do_yes():
+            result["value"] = True
+            win.destroy()
+
+        def do_no():
+            result["value"] = False
+            win.destroy()
+
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(pady=(0, 15))
+
+        tk.Button(btn_frame, text="yes", width=18, command=do_yes).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="No, Choose a different folder", width=28, command=do_no).pack(side=tk.LEFT, padx=5)
+
+        def on_close():
+            do_no()
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
+
+        # optional, bring to front
+        win.lift()
+        self.root.wait_window(win)
+
+        # focus back to entry so user can change it if needed
+        self.folder_entry.focus_set()
+        self.folder_entry.selection_range(0, tk.END)
+
+        return result["value"]
+
     # ---------------- UI (MAIN WINDOW) ----------------
 
     def load_next_file(self):
+        # stop any current video and clear current image
         self.stop_video_preview()
         self.current_image_pil = None
+        self.current_image_tk = None
 
         if self.index >= len(self.files):
             self.current_path = None
@@ -587,16 +701,23 @@ class ImageSorterApp:
         self.current_path = self.files[self.index]
         self.filename_label.config(text=self.current_path.name)
         self.folder_entry.delete(0, tk.END)
+        self.hide_suggestions()
 
         ext = self.current_path.suffix.lower()
         self.info_label.config(text="")
         self.open_video_button.pack_forget()
 
         if ext in IMAGE_EXTS:
-            img = Image.open(self.current_path)
-            self.current_image_pil = img
-            self.render_current_image()
-            self.rotate_button.config(state=tk.NORMAL)
+            try:
+                # open image, copy to memory, close file handle
+                with Image.open(self.current_path) as img:
+                    self.current_image_pil = img.copy()
+                self.render_current_image()
+                self.rotate_button.config(state=tk.NORMAL)
+            except Exception as e:
+                self.current_image_pil = None
+                self.preview_label.config(image="", text=f"Could not open image:\n{e}")
+                self.rotate_button.config(state=tk.DISABLED)
         else:
             self.start_video_preview(self.current_path)
             self.rotate_button.config(state=tk.DISABLED)
@@ -622,6 +743,16 @@ class ImageSorterApp:
     # ---------------- ACTIONS (MAIN WINDOW) ----------------
 
     def _move_to(self, folder):
+        if not self.current_path:
+            return
+
+        # make sure no file handles are open on the current file
+        self.stop_video_preview()
+        # current_image_pil is in memory only because we used copy,
+        # so no file handle is open, but we can drop it to free memory
+        self.current_image_pil = None
+        self.current_image_tk = None
+
         dest_dir = self.source_dir / folder
         dest_dir.mkdir(exist_ok=True)
 
@@ -631,6 +762,9 @@ class ImageSorterApp:
         self.actions.append({"name": self.current_path.name, "dest": dest})
 
         self.last_folder_name = folder
+
+        # update destination folders so new folder appears in autocomplete
+        self._add_folder_to_autocomplete(folder)
 
         self.index += 1
         self.load_next_file()
@@ -642,6 +776,14 @@ class ImageSorterApp:
         if not folder:
             messagebox.showwarning("Missing folder name", "Enter a folder name.")
             return
+
+        dest_dir = self.source_dir / folder
+        if not dest_dir.exists():
+            # ask before creating a new folder
+            if not self.confirm_create_folder(folder):
+                # user said no, do not move
+                return
+
         self._move_to(folder)
 
     def add_to_previous_folder(self):
@@ -676,6 +818,9 @@ class ImageSorterApp:
             return
 
         shutil.move(src, dest)
+
+        # full refresh here is fine, undo is rare
+        self._refresh_dest_folders()
 
         if self.index > 0:
             self.index -= 1
