@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -28,6 +29,10 @@ class ImageSorterApp:
         self.root = root
         self.source_dir = Path(source_dir)
 
+        # offload image decoding to a background worker to keep the UI responsive
+        self.loader_executor = ThreadPoolExecutor(max_workers=1)
+        self.current_load_future = None
+
         # file list, only direct children of Photos
         self.files = self._get_files()
 
@@ -43,6 +48,9 @@ class ImageSorterApp:
 
         self.actions = []
         self.last_folder_name = None
+
+        # cache folder names to avoid re-scanning the filesystem on every keypress
+        self.folder_cache = []
 
         # shuffle window state (shared by Shuffle Sorted and Shuffle Selected)
         self.shuffle_window = None
@@ -65,6 +73,7 @@ class ImageSorterApp:
 
         root.title("Image and Video Sorter")
         root.bind("<Key>", self.on_keypress)
+        root.protocol("WM_DELETE_WINDOW", self.close_app)
 
         self.filename_label = tk.Label(root, text="", font=("Arial", 12))
         self.filename_label.pack(pady=5)
@@ -129,7 +138,7 @@ class ImageSorterApp:
         tk.Button(buttons, text="Shuffle Selected",
                   command=self.open_shuffle_selected_config).pack(fill=tk.X, pady=2)
 
-        tk.Button(buttons, text="Quit", command=root.destroy).pack(fill=tk.X, pady=2)
+        tk.Button(buttons, text="Quit", command=self.close_app).pack(fill=tk.X, pady=2)
 
         # info + open + status, under the buttons
         self.info_label = tk.Label(buttons, text="", font=("Arial", 10),
@@ -596,6 +605,10 @@ class ImageSorterApp:
         self.stop_video_preview()
         self.current_image_pil = None
 
+        if self.current_load_future:
+            self.current_load_future.cancel()
+            self.current_load_future = None
+
         if self.index >= len(self.files):
             self.current_path = None
             self.filename_label.config(text="All done")
@@ -613,10 +626,8 @@ class ImageSorterApp:
         self.open_video_button.pack_forget()
 
         if ext in IMAGE_EXTS:
-            img = Image.open(self.current_path)
-            self.current_image_pil = img
-            self.render_current_image()
             self.rotate_button.config(state=tk.NORMAL)
+            self._start_image_load(self.current_path)
         else:
             self.start_video_preview(self.current_path)
             self.rotate_button.config(state=tk.DISABLED)
@@ -625,6 +636,43 @@ class ImageSorterApp:
 
         self.update_previous_button()
         self.update_status()
+
+    def _start_image_load(self, path):
+        target_size = self._get_preview_size()
+
+        def load_image():
+            with Image.open(path) as img:
+                img.load()
+                img = img.copy()
+                img.thumbnail(target_size)
+                return img
+
+        self.current_load_future = self.loader_executor.submit(load_image)
+
+        def on_done(fut):
+            try:
+                img = fut.result()
+            except Exception as exc:
+                self.root.after(0, lambda: self._handle_image_error(path, exc))
+                return
+
+            self.root.after(0, lambda: self._on_image_loaded(path, img))
+
+        self.current_load_future.add_done_callback(on_done)
+
+    def _on_image_loaded(self, path, img):
+        if path != self.current_path:
+            return
+
+        self.current_image_pil = img
+        self.render_current_image()
+
+    def _handle_image_error(self, path, exc):
+        if path != self.current_path:
+            return
+        self.current_image_pil = None
+        self.preview_label.config(image="", text="")
+        self.info_label.config(text=f"Could not open image:\n{path.name}\n{exc}")
 
     def update_previous_button(self):
         if self.last_folder_name:
@@ -775,6 +823,18 @@ class ImageSorterApp:
         self.status_label.config(
             text=f"File {self.index + 1} of {len(self.files)} | Remaining: {remaining}"
         )
+
+    def close_app(self):
+        self.stop_video_preview()
+        self.shuffle_stop_video()
+        if self.current_load_future:
+            self.current_load_future.cancel()
+            self.current_load_future = None
+        try:
+            self.loader_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        self.root.destroy()
 
 
 def main():
