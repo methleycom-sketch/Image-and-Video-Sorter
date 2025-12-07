@@ -4,7 +4,7 @@ import shutil
 import subprocess
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 import random
 
 import cv2
@@ -92,9 +92,16 @@ class ImageSorterApp:
         entry_frame.pack(pady=5, fill=tk.X)
 
         tk.Label(entry_frame, text="Folder name:").pack(anchor="w")
-        self.folder_entry = tk.Entry(entry_frame, width=18)
-        self.folder_entry.pack(fill=tk.X, pady=2)
-        self.folder_entry.bind("<Return>", self.move_current_file)
+        self.folder_var = tk.StringVar()
+        self.folder_combobox = ttk.Combobox(
+            entry_frame,
+            textvariable=self.folder_var,
+            width=18,
+            values=[],
+        )
+        self.folder_combobox.pack(fill=tk.X, pady=2)
+        self.folder_combobox.bind("<Return>", self.move_current_file)
+        self.folder_combobox.bind("<KeyRelease>", self.on_folder_typed)
 
         # main buttons in left column
         tk.Button(buttons, text="Move file", command=self.move_current_file).pack(fill=tk.X, pady=2)
@@ -139,6 +146,8 @@ class ImageSorterApp:
             messagebox.showinfo("No files", "No files found in Photos.")
             root.destroy()
             return
+
+        self.refresh_folder_options()
 
         self.load_next_file()
 
@@ -597,7 +606,7 @@ class ImageSorterApp:
 
         self.current_path = self.files[self.index]
         self.filename_label.config(text=self.current_path.name)
-        self.folder_entry.delete(0, tk.END)
+        self.folder_var.set("")
 
         ext = self.current_path.suffix.lower()
         self.info_label.config(text="")
@@ -636,6 +645,8 @@ class ImageSorterApp:
         dest_dir = self.source_dir / folder
         dest_dir.mkdir(exist_ok=True)
 
+        self.refresh_folder_options()
+
         dest = dest_dir / self.current_path.name
         shutil.move(self.current_path, dest)
 
@@ -649,11 +660,78 @@ class ImageSorterApp:
     def move_current_file(self, event=None):
         if not self.current_path:
             return
-        folder = self.folder_entry.get().strip()
+        folder = self.folder_var.get().strip()
         if not folder:
             messagebox.showwarning("Missing folder name", "Enter a folder name.")
             return
+        folder_path = self.source_dir / folder
+        if not folder_path.exists():
+            if not self.confirm_create_folder(folder):
+                return
         self._move_to(folder)
+
+    def confirm_create_folder(self, folder_name):
+        win = tk.Toplevel(self.root)
+        win.title("Create folder")
+        win.transient(self.root)
+        win.grab_set()
+
+        msg = (
+            f"The folder {folder_name} does not exist. "
+            f"Would you like to create a new folder titled {folder_name}?"
+        )
+
+        tk.Label(win, text=msg, wraplength=320, justify="left").pack(
+            padx=15, pady=(15, 10)
+        )
+
+        response = {"value": False}
+
+        def choose(should_create):
+            response["value"] = should_create
+            win.destroy()
+
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(pady=(0, 15))
+        tk.Button(btn_frame, text="Yes", width=18, command=lambda: choose(True)).pack(
+            side=tk.LEFT, padx=5
+        )
+        tk.Button(
+            btn_frame,
+            text="No, Choose different folder",
+            width=22,
+            command=lambda: choose(False),
+        ).pack(side=tk.LEFT, padx=5)
+
+        win.protocol("WM_DELETE_WINDOW", lambda: choose(False))
+        self.root.wait_window(win)
+        return response["value"]
+
+    def _list_available_folders(self):
+        folders = []
+        if self.source_dir.exists():
+            for entry in self.source_dir.iterdir():
+                if entry.is_dir() and not entry.name.startswith("."):
+                    folders.append(entry.name)
+        folders.sort(key=str.lower)
+        return folders
+
+    def refresh_folder_options(self):
+        self.folder_combobox["values"] = self._list_available_folders()
+
+    def on_folder_typed(self, event=None):
+        # simple autocomplete: update dropdown suggestions to matching entries
+        text = self.folder_var.get().strip().lower()
+        all_folders = self._list_available_folders()
+        if not text:
+            filtered = all_folders
+        else:
+            filtered = [name for name in all_folders if name.lower().startswith(text)]
+        if filtered != list(self.folder_combobox["values"]):
+            self.folder_combobox["values"] = filtered
+        # reopen full list when cleared
+        if not text:
+            self.refresh_folder_options()
 
     def add_to_previous_folder(self):
         if self.current_path and self.last_folder_name:
