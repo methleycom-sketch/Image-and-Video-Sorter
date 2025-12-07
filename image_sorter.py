@@ -160,7 +160,56 @@ class ImageSorterApp:
                         images.append(p)
                     elif ext in VIDEO_EXTS:
                         videos.append(p)
-        return sorted(videos) + sorted(images)
+
+        ordered_images = self._order_images_by_similarity(images)
+        return sorted(videos) + ordered_images
+
+    def _compute_image_signature(self, path):
+        try:
+            img = Image.open(path).convert("RGB")
+            img.thumbnail((64, 64))
+            hist = img.histogram()
+            total = sum(hist)
+            if not total:
+                return None
+            return [h / total for h in hist]
+        except Exception:
+            return None
+
+    def _hist_distance(self, hist_a, hist_b):
+        return sum((a - b) ** 2 for a, b in zip(hist_a, hist_b))
+
+    def _order_images_by_similarity(self, image_paths):
+        if not image_paths:
+            return []
+
+        features = []
+        fallbacks = []
+
+        for path in image_paths:
+            signature = self._compute_image_signature(path)
+            if signature is None:
+                fallbacks.append(path)
+            else:
+                features.append((path, signature))
+
+        ordered = []
+        if features:
+            features.sort(key=lambda item: item[0].name.lower())
+            current_path, current_sig = features.pop(0)
+            ordered.append(current_path)
+
+            while features:
+                next_idx, (next_path, next_sig) = min(
+                    enumerate(features),
+                    key=lambda item: self._hist_distance(current_sig, item[1][1]),
+                )
+                features.pop(next_idx)
+                ordered.append(next_path)
+                current_sig = next_sig
+
+        ordered.extend(sorted(fallbacks, key=lambda p: p.name.lower()))
+        return ordered
 
     # ---------------- SHUFFLE SORTED ----------------
 
